@@ -1,0 +1,12 @@
+#!/bin/bash
+function ips(){
+	local nics=$(route -n | grep ^0.0.0.0 | awk '{print $8}') 
+	for nic in $nics
+	do
+	    local ip=$(ifconfig -a|grep inet|grep -v 127.0.0.1|grep -v inet6|awk '{print $2}')
+	    echo [$nic] $ip
+	done
+}
+
+ips
+

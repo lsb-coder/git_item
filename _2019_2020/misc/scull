@@ -1,0 +1,278 @@
+/*设备号的分配和释放*/
+#include <linux/types.h>
+dev_t	/*保存设备编号,32位（主：12位；次：20位）*/
+
+#include <kdev_t.h>	
+MAJOR(dev_t dev);	/*获取主次设备号*/
+MINOR(dev_t dev);
+MKDEV(int major,int minor);	/*获取dev_t*/
+
+#include <linux/fs.h>
+int scull_major;	/*全局变量*/
+if(scull_major) {
+	dev = MKDEV(scull_major,scull_minor);
+	result = register_chrdev_region(dev,scull_nr_devs,"scull");	/*分配设备编号，需提前知道主设备编号*/
+} else {
+	result = alloc_chrdev_region(&dev,scull_minor,scull_nr_devs,"scull");	/*动态分配设备编号*/
+	scull_major = MAJOR(dev);
+}
+void unregister_chrdev_region(dev_t first,unsigned int count);	/*释放编号*/
+
+
+/*一些重要的数据结构:file_operations,file和inode*/
+/*file_operations:建立设备编号与驱动程序的连接*/
+#include <linux/fs.h>
+struct file_operations {
+	struct module *owner;	/*不是一个操作，而是指向拥有该结构的模块指针，避免在模块正在被使用时卸载该模块。几乎任何情况都会被初始化为THIS_MODULE <linux/module.h>*/
+	loff_t (*llseek) (struct file *, loff_t, int);	/*修改文件当前读写位置，并返回新位置，loff_t长偏移量占64位，若是NULL，则会不可预期的修改file中的位置计数器*/
+	ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);	/*读取设备数据，若是NULL，则read系统调用出错返回-EINVAL，返回非负数表示成功读取的字节数*/
+	ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);	/*发送数据到设备*/
+	ssize_t (*read_iter) (struct kiocb *, struct iov_iter *);
+	ssize_t (*write_iter) (struct kiocb *, struct iov_iter *);
+	int (*iterate) (struct file *, struct dir_context *);
+	unsigned int (*poll) (struct file *, struct poll_table_struct *);	/*是poll、epoll和select这三个系统调用的后端实现，用于查询文件描述符的读写是否会阻塞。返回一个位掩码，......，若是NULL，则设备会被认为可读可写，且不会阻塞*/
+	long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
+	long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
+	int (*mmap) (struct file *, struct vm_area_struct *);	/*用于请求将设备内存映射到进程地址空间。如果设备没有实现这个方法，那么mmap系统调用将返回-ENODEV*/
+	int (*open) (struct inode *, struct file *);	/*对设备文件执行的第一个操作，但不要求驱动程序一定要声明一个相应的方法。若是NULL，则设备打开始终成功，但系统不会通知驱动程序*/
+	int (*flush) (struct file *, fl_owner_t id);	/*在进程关闭设备文件描述符副本的时候，它应该执行并等待设备上尚未完结的操作，若是NULL，内核将简单地忽略用户应用程序的请求*/
+	int (*release) (struct inode *, struct file *);	/*file被释放时，将调用*/
+	int (*fsync) (struct file *, loff_t, loff_t, int datasync);	/*fsync系统调用的后端是实现，用户调用它来刷新待处理的数据。若无相应实现，则放回-EINVAL*/
+	int (*aio_fsync) (struct kiocb *, int datasync);	/*异步的fsync*/
+	int (*fasync) (int, struct file *, int);	/*通知FASYNC标志发生了变化*/
+	int (*lock) (struct file *, int, struct file_lock *);	/*实现文件的锁定，设备驱动程序几乎不会实现该方法*/
+	ssize_t (*sendpage) (struct file *, struct page *, int, size_t, loff_t *, int);	/*sendfile系统调用的另外一半，由内核调用以将数据发送到对应的文件，每次一个数据页。通常也不需要实现*/
+	unsigned long (*get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);	/*在进程的地址空间中找到一个合适的位置，以便将底层设备中的内存段映射到该位置。该任务通常由内存管理代码完成，但该方法的存在可允许驱动程序强制满足特定设备需要的任何对齐需求。大部分驱动程序可置其为NULL*/
+	int (*check_flags)(int);	/*该方法允许模块检查传递给fcntl(F_SETFL...)调用的标志*/
+	int (*flock) (struct file *, int, struct file_lock *);
+	ssize_t (*splice_write)(struct pipe_inode_info *, struct file *, loff_t *, size_t, unsigned int);
+	ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
+	int (*setlease)(struct file *, long, struct file_lock **, void **);
+	long (*fallocate)(struct file *file, int mode, loff_t offset,
+			  loff_t len);
+	void (*show_fdinfo)(struct seq_file *m, struct file *f);
+#ifndef CONFIG_MMU
+	unsigned (*mmap_capabilities)(struct file *);
+#endif
+};
+/*最重要的设备方法*/
+stuct file_operations scull_fops = {
+	.owner =	THIS_MODULE,
+	.llseek =	scull_llseek,
+	.read =		scull_read,
+	.write =	scull_write,
+	.ioctl =	scull_ioctl,
+	.open =		scull_open,
+	.release = 	scull_release,
+};
+
+/*file:与用户空间程序中的FILE没有任何关联，struct file是一个内核结构,代表一个打开的文件，由内核在open时创建，并传递给该文件上进行操作的所有函数，直到最后的close。在文件的所有实例被关闭后，内核会释放该数据结构*/
+#include <linux/fs.h>
+struct file {
+	union {
+		struct llist_node	fu_llist;
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path;
+	struct inode		*f_inode;	/* cached value */
+	const struct file_operations	*f_op;	/*与文件相关的操作。内核在执行open操作时对这个指针赋值......*/
+
+	/*
+	 * Protects f_ep_links, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	atomic_long_t		f_count;
+	unsigned int 		f_flags;	/*文件标志。主要是为了检查用户请求是否是非阻塞式O_NONBLOCK，判断读写权限应查看fmode，这些标志都定义在<linux/fcntl.h>*/
+	fmode_t			f_mode;	/*文件模式。判断可读FMODE_READ可写FMODE_WRITE，内核自行判断，驱动无需额外判断*/
+	struct mutex		f_pos_lock;
+	loff_t			f_pos;	/*当前的读/写位置。可读但不要去修改，其会接收最后的指针参数更新，也有例外，即llseek*/
+	struct fown_struct	f_owner;
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra;
+
+	u64			f_version;
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data;	/*open系统调用在调用驱动程序的open方法前将这个指针置为NULL......*/
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct list_head	f_ep_links;
+	struct list_head	f_tfile_llink;
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+} __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
+
+/*inode：内核用其在内部表示文件，和file不同，后者是打开文件的描述符，单个文件可能多个file对应一个inode，包含大量有关文件，但常规来说，只有两个字段对驱动程序的编写有用*/
+struct inode {
+	umode_t			i_mode;
+	unsigned short		i_opflags;
+	kuid_t			i_uid;
+	kgid_t			i_gid;
+	unsigned int		i_flags;
+
+#ifdef CONFIG_FS_POSIX_ACL
+	struct posix_acl	*i_acl;
+	struct posix_acl	*i_default_acl;
+#endif
+
+	const struct inode_operations	*i_op;
+	struct super_block	*i_sb;
+	struct address_space	*i_mapping;
+
+#ifdef CONFIG_SECURITY
+	void			*i_security;
+#endif
+
+	/* Stat data, not accessed from path walking */
+	unsigned long		i_ino;
+	/*
+	 * Filesystems may only read i_nlink directly.  They shall use the
+	 * following functions for modification:
+	 *
+	 *    (set|clear|inc|drop)_nlink
+	 *    inode_(inc|dec)_link_count
+	 */
+	union {
+		const unsigned int i_nlink;
+		unsigned int __i_nlink;
+	};
+	dev_t			i_rdev;	/*对表示设备文件的inode结构，该字段包含了真正的设备编号*/
+	loff_t			i_size;
+	struct timespec		i_atime;
+	struct timespec		i_mtime;
+	struct timespec		i_ctime;
+	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
+	unsigned short          i_bytes;
+	unsigned int		i_blkbits;
+	enum rw_hint		i_write_hint;
+	blkcnt_t		i_blocks;
+
+#ifdef __NEED_I_SIZE_ORDERED
+	seqcount_t		i_size_seqcount;
+#endif
+
+	/* Misc */
+	unsigned long		i_state;
+	struct mutex		i_mutex;
+
+	unsigned long		dirtied_when;	/* jiffies of first dirtying */
+	unsigned long		dirtied_time_when;
+
+	struct hlist_node	i_hash;
+	struct list_head	i_io_list;	/* backing dev IO list */
+#ifdef CONFIG_CGROUP_WRITEBACK
+	struct bdi_writeback	*i_wb;		/* the associated cgroup wb */
+
+	/* foreign inode detection, see wbc_detach_inode() */
+	int			i_wb_frn_winner;
+	u16			i_wb_frn_avg_time;
+	u16			i_wb_frn_history;
+#endif
+	struct list_head	i_lru;		/* inode LRU list */
+	struct list_head	i_sb_list;
+	union {
+		struct hlist_head	i_dentry;
+		struct rcu_head		i_rcu;
+	};
+	u64			i_version;
+	atomic_t		i_count;
+	atomic_t		i_dio_count;
+	atomic_t		i_writecount;
+#ifdef CONFIG_IMA
+	atomic_t		i_readcount; /* struct files open RO */
+#endif
+	const struct file_operations	*i_fop;	/* former ->i_op->default_file_ops */
+	struct file_lock_context	*i_flctx;
+	struct address_space	i_data;
+	struct list_head	i_devices;
+	union {
+		struct pipe_inode_info	*i_pipe;
+		struct block_device	*i_bdev;
+		struct cdev		*i_cdev;	/*表示字符设备的内核的内部结构。当inode指向一个字符设备文件时，该字段包含了指向struct cdev结构的指针*/
+		char			*i_link;
+	};
+
+	__u32			i_generation;
+
+#ifdef CONFIG_FSNOTIFY
+	__u32			i_fsnotify_mask; /* all events this inode cares about */
+	struct hlist_head	i_fsnotify_marks;
+#endif
+
+#if IS_ENABLED(CONFIG_FS_ENCRYPTION)
+	struct fscrypt_info	*i_crypt_info;
+#endif
+	void			*i_private; /* fs or device private pointer */
+};
+
+
+/*字符设备的注册*/
+#include <linux/cdev.h>
+/*若读者想在运行时获取一个独立的cdev结构，则编写代码*/
+struct cdev *my_cdev = cdev_alloc();
+my_cdev->ops = &my_fops
+/*接下来可将cdev结构嵌入自己的设备特定结构中，需要下面代码来初始化*/
+void cdev_init(struct cdev *dev,struct file_operation *fops);
+/*另需初始化struct cdev的所有者字段，应被置为THIS_MODULE。设置好后，最后需通过下面的调用告诉内核该结构的信息*/
+int cdev_add(struct cdev *dev,dev_t num,unsigned int count);	/*在驱动程序没完全准备好处理设备上的操作时，不能调用的cdev_add*/
+/*移除字符设备，做如下调用*/
+void cdev_del(struct cdev *dev);
+
+/*scull中的设备注册*/
+struct scull_dev {
+	struct scull_qset *data;	/*指向第一个量子集的指针*/
+	int quantum;			/*当前量子的大小*/
+	int qset;			/*当前数组的大小*/
+	unsigned long szie;		/*保存在其中的数据总量*/
+	unsigned int access_key;	/*由sculluid和scullpriv使用*/
+	struct semaphore sem;		/*互斥信号量*/
+	struct cdev cdev;		/*字符设备结构*/
+}
+/*现在集中在cdev上，完成上述的初始化并添加，如下代码所示*/
+static void scull_setup_cdev(struct scull_dev *dev,int index)
+{
+	int err,devno = MKDEV(scull_major,scull_minor +index);
+
+	cdev_init (&dev->cdev,&scull_fops);
+	dev->cdev.owner = THIS_MODULE;
+	dev->cdev.ops = &scull_fops;
+	err = cdev_add (&dev->cdev,devno,1);
+	/*Fail gracefully if need be*/
+	if (err)
+	printk(KERN_NOTICE "Error %d adding scull %d",err,index);
+}
+
+
+
+/*open和release*/
+/*open:提供驱动程序以初始化的能力
+1）检查设备特定的错误，例如设备未就绪；
+2）如果设备是首次打开，则对其进行初始化；
+3）如有必要，更新f_op指针；
+4）分配并填写置于file->private_data里的数据结构
+*/
+/*首先确定要打开的具体设备*/
+#include <kernel.h>
+container_of(pointer,container_type,container_field);/*该宏用于找到适当的设备结构*/
+struct scull_dev *dev;		/*device information*/
+dev = container_of(inode->icdev,struct scull_dev,cdev);
+filp->private_data = dev;		/*for other methods*/
+/*经过微简化的scull_open代码如下*/
+int scull_open(struct inode *inode,struct file *file)
+{
+	struct scull_dev *dev;		/*device information*/
+
+	dev = container_of(inode->i_cdev,struct scull_dev,cdev);
+	filp->private_date = dev;	/*for other methods*/
+
+	/*now trim to 0 the length of the device if open was write-only*/
+	if((filp->f_flags & O_ACCMODE) == O_WRONLY) {
+		scull_trim(dev);
+	}
+	return 0;
+}
+

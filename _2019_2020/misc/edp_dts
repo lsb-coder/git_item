@@ -1,0 +1,126 @@
+/******** beginning for eDP by LSb to start ********/
+/*VOPB -> eDP -> Panel*/
+/*0:backlight*/
+&backlight{
+	status = "okay";
+}；
+
+/*1:vop*/
+/*&vopl {
+	assigned-clocks = <&cru DCLK_VOP1_DIV>;
+	assigned-clock-parents = <&cru PLL_VPLL>;
+};
+
+&vopb {
+	assigned-clocks = <&cru DCLK_VOP0_DIV>;
+	assigned-clock-parents = <&cru PLL_CPLL>;
+};*/
+
+&edp_in_vopl {
+	status = "disabled";
+};
+
+&edp_in_vopb {
+	status = "okay";
+};
+
+/*logo*/
+&route_edp {
+	status = "okay";
+	connect = <&vopb_out_edp>;
+	
+};
+
+/*2:eDP*/
+/*eDP Host*/
+&edp {
+	force-hpd;
+	status = "okay";
+
+	/*ports*/
+	ports {
+		port@1 {
+			reg = <1>;
+			edp_out_panel:endpoint {
+				remote-endpoint = <&panel_in_edp>;
+			};
+		};
+	}；
+}；
+
+/*eDP PHY*/
+&edp_phy {
+		status = "okay";
+};
+
+/*3:panel*/
+&edp_panel {
+	compatible = "samsung,ltl101dl03";
+	power-supply = <&vcc_lcd>;
+	backlight = <&backlight>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&bl_en>;
+	pinctrl-1 = <&bl_en0>;
+	pinctrl-2 = <&lcdc_bl>;
+	enable-gpios = <&gpio7 2 GPIO_ACTIVE_HIGH>;
+	enable-gpios = <&gpio5 18 GPIO_ACTIVE_HIGH>;
+	enable-gpios = <&gpio7 0 GPIO_ACTIVE_HIGH>;
+	prepare-delay-ms = <20>;
+	enable-delay-ms = <20>;
+	reset-delay-ms = <20>;
+	starus = "okay";
+
+	/*timing*/
+	display-timings {
+		native-mode = <&timing0>;
+
+ 		timing0: timing0 {
+			clock-frequency = <205000000>;
+			hactive = <2560>;
+			vactive = <1600>;
+			hfront-porch = <12>;
+			hsync-len = <16>;
+			hback-porch = <48>;
+			vfront-porch = <8>;
+			vsync-len = <4>;
+			vback-porch = <8>;
+			hsync-active = <0>;
+			vsync-active = <0>;
+			de-active = <0>;
+			pixelclk-active = <0>;
+		};
+	};
+
+	/*ports*/
+	ports {
+		panel_in_edp: endpoint {
+			remote-endpoint = <&edp_out_panel>;
+		};			
+	};
+};
+
+/*4:pinctrl*/
+&pinctrl {
+	edp_panel {
+		bl_en: bl-en {
+			rockchip,pins = <7 2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+		bl_en0: bl-en0 {
+			rockchip,pins = <5 18 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+		lcdc_bl: lcdc_bl {
+			rockchip,pins = <7 0 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
+/*avoid confiction*/
+/*&hdmi_in_vopb {
+        status = "disabled";
+};
+
+&hdmi_in_vopl {
+        status = "okay";
+};*/
+/******** end for eDP by LSb ********/
+
